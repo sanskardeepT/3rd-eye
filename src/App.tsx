@@ -1071,7 +1071,10 @@ function App() {
             <EyeLogo className="w-7 h-7" />
             <span className="font-bold">3rd EYE</span>
           </div>
-          <p className="text-zinc-500 text-sm">© 2026 Sanskardeep, Rugved, Parth</p>
+          <div className="text-zinc-500 text-sm text-center md:text-right">
+            <p>Developer: Sanskardeep Talikote</p>
+            <p>Contact: 9403910943 | sanskardeepbtalikote19@gail.com</p>
+          </div>
         </div>
       </footer>
     </div>
