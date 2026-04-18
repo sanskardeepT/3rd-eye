@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://3rd-eye.onrender.com/api/$1"
+      "destination": "https://threerd-eye-zqi5.onrender.com/api/$1"
     }
   ]
 }
