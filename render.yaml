@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: 3rd-eye
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build:full
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: GEMINI_API_KEY
+        sync: false
+    autoDeploy: true

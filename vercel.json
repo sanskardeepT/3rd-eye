@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://3rd-eye.onrender.com/api/$1"
+    }
+  ]
+}

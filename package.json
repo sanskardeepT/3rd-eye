@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
+    "build:full": "tsc -p tsconfig.server.json && vite build",
     "preview": "vite preview",
+    "start": "node dist/server.js",
+    "heroku-postbuild": "npm run build:full",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
   },
