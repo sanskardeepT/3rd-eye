@@ -1,7 +1,7 @@
-import { useState, useCallback, useMemo, useRef, Component, ReactNode } from "react";
+import React, { useState, useCallback, useMemo, useRef, type ChangeEvent, type ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  Search, AlertTriangle, CheckCircle, ArrowLeft, ChevronRight,
+  Search, CheckCircle, ArrowLeft, ChevronRight,
   Upload, Loader, Info, X, Trash2, Archive,
   Instagram, Facebook, Twitter, Youtube, FileWarning,
   MessageSquare, Heart, Film, Eye, Hash, Radio, ThumbsUp,
@@ -31,7 +31,6 @@ interface AnalysisResult extends PostItem {
 
 type Platform = "instagram" | "facebook" | "twitter" | "youtube";
 type Page = "home" | "platform" | "upload" | "analyzing" | "dashboard";
-type ScanMode = "quick" | "deep" | "all";
 
 // ─── PLATFORM TAB CONFIG ──────────────────────────────────────────────────────
 
@@ -239,7 +238,12 @@ async function uploadXHR(
   onProgress: (pct: number) => void,
   attempt = 1,
 ): Promise<any> {
-  return new Promise((resolve) => {
+  const apiTargets = [
+    `${window.location.origin}/api/upload`,
+    "http://localhost:5000/api/upload",
+  ].filter((url, index, arr) => arr.indexOf(url) === index);
+
+  const tryTarget = (targetIndex: number): Promise<any> => new Promise((resolve) => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("platform", platform);
@@ -251,26 +255,43 @@ async function uploadXHR(
       catch { resolve({ success: false, error: "Invalid server response." }); }
     };
     xhr.onerror = async () => {
-      if (attempt < 3) {
+      if (targetIndex < apiTargets.length - 1) {
+        resolve(tryTarget(targetIndex + 1));
+      } else if (attempt < 3) {
         await new Promise(r => setTimeout(r, 2000 * attempt));
         resolve(uploadXHR(file, platform, onProgress, attempt + 1));
       } else {
-        resolve({ success: false, error: "Network error. Is the server running? Check terminal." });
+        resolve({ success: false, error: "Upload server se connection nahi ho raha. Ensure backend is running on localhost:5000 and try again." });
       }
     };
     xhr.ontimeout = () => resolve({ success: false, error: "Upload timed out." });
     xhr.timeout = 15 * 60 * 1000;
-    xhr.open("POST", "/api/upload");
+    xhr.open("POST", apiTargets[targetIndex]);
     xhr.send(fd);
   });
+  return tryTarget(0);
+}
+
+function verdictFromScore(score: number) {
+  if (score >= 75) return { label: "Safe", tone: "text-emerald-400", chip: "bg-emerald-500/15 border-emerald-500/30 text-emerald-300" };
+  if (score >= 45) return { label: "Moderate", tone: "text-amber-400", chip: "bg-amber-500/15 border-amber-500/30 text-amber-300" };
+  return { label: "Risky", tone: "text-red-400", chip: "bg-red-500/15 border-red-500/30 text-red-300" };
+}
+
+function itemSafetyMeta(item: AnalysisResult) {
+  const safetyPercent = Math.max(0, Math.min(100, 100 - item.riskScore));
+  if (item.riskLevel === "High") return { label: "Risky", safetyPercent };
+  if (item.riskLevel === "Medium") return { label: "Moderate", safetyPercent };
+  return { label: "Safe", safetyPercent };
 }
 
 // ─── CONTENT CARD ─────────────────────────────────────────────────────────────
 
-function ContentCard({ item, index, isFastScan }: { item: AnalysisResult; index: number; isFastScan?: boolean }) {
+function ContentCard({ item, index }: { key?: React.Key; item: AnalysisResult; index: number }) {
   const isHigh = item.riskLevel === "High";
   const isMed  = item.riskLevel === "Medium";
   const flagged = isHigh || isMed;
+  const safety = itemSafetyMeta(item);
 
   return (
     <motion.div
@@ -278,8 +299,7 @@ function ContentCard({ item, index, isFastScan }: { item: AnalysisResult; index:
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index * 0.02, 0.3) }}
       className={`p-5 rounded-2xl border ${
-        isFastScan        ? "bg-zinc-900/40 border-white/5"
-        : isHigh          ? "bg-red-500/5 border-red-500/20"
+        isHigh          ? "bg-red-500/5 border-red-500/20"
         : isMed           ? "bg-amber-500/5 border-amber-500/20"
         : "bg-zinc-900/40 border-white/5"
       }`}
@@ -287,13 +307,13 @@ function ContentCard({ item, index, isFastScan }: { item: AnalysisResult; index:
       {/* Top row */}
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex items-center gap-2 flex-wrap">
-          {!isFastScan && flagged && (
+          {flagged && (
             <span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg uppercase ${
               isHigh ? "bg-red-500/20 text-red-400" : "bg-amber-500/20 text-amber-400"}`}>
-              {item.riskLevel} · {item.riskScore}/100
+              {safety.label} · {safety.safetyPercent}% safe
             </span>
           )}
-          {!isFastScan && flagged && (
+          {flagged && (
             <span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border ${
               item.suggestedAction === "Delete"
                 ? "bg-red-500/10 text-red-400 border-red-500/20"
@@ -301,16 +321,13 @@ function ContentCard({ item, index, isFastScan }: { item: AnalysisResult; index:
               → {item.suggestedAction}
             </span>
           )}
-          {!isFastScan && !flagged && (
+          {!flagged && (
             <span className="text-[11px] text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20 font-bold">
-              ✓ Safe
+              ✓ Safe · {safety.safetyPercent}% safe
             </span>
           )}
-          {isFastScan && item.timestamp && (
-            <span className="text-xs text-zinc-500">{item.timestamp}</span>
-          )}
         </div>
-        {!isFastScan && flagged && (
+        {flagged && (
           <div className="flex gap-1.5 shrink-0">
             <button type="button" title="Delete" className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 hover:text-red-400 transition-all text-zinc-500">
               <Trash2 className="w-4 h-4" />
@@ -379,7 +396,7 @@ function ContentCard({ item, index, isFastScan }: { item: AnalysisResult; index:
       )}
 
       {/* AI reason (deep scan flagged only) */}
-      {!isFastScan && flagged && (
+      {flagged && (
         <div className="mt-3 pt-3 border-t border-white/5">
           <p className="text-xs text-zinc-400"><span className="font-bold text-zinc-300">AI reason:</span> {item.reason}</p>
         </div>
@@ -394,7 +411,6 @@ function App() {
   const [page, setPage]           = useState<Page>("home");
   const [platform, setPlatform]   = useState<Platform | null>(null);
   const [showGuide, setShowGuide] = useState(false);
-  const [scanMode, setScanMode]   = useState<"fast" | "deep">("fast");
 
   // Data
   const [allItems, setAllItems]   = useState<PostItem[]>([]);
@@ -416,9 +432,90 @@ function App() {
 
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const analyzeItem = useCallback(async (item: PostItem, attempt = 1): Promise<AnalysisResult> => {
+    const apiTargets = [
+      `${window.location.origin}/api/analyze-post`,
+      "http://localhost:5000/api/analyze-post",
+    ].filter((url, index, arr) => arr.indexOf(url) === index);
+
+    for (const target of apiTargets) {
+      try {
+        const r = await fetch(target, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ item }),
+        });
+        if (r.status === 429) {
+          await new Promise(x => setTimeout(x, 1500 * attempt));
+          continue;
+        }
+        if (!r.ok) continue;
+
+        const d = await r.json();
+        return {
+          category: d.category || item.category,
+          text: d.text || d.post || item.text || "",
+          sender: d.sender || item.sender,
+          receiver: d.receiver || item.receiver,
+          participants: d.participants || item.participants,
+          username: d.username || item.username,
+          reelOwner: d.reelOwner || item.reelOwner,
+          postOwner: d.postOwner || item.postOwner,
+          timestamp: d.timestamp || item.timestamp,
+          extra: d.extra || item.extra,
+          riskLevel: (["Low", "Medium", "High"].includes(d.riskLevel) ? d.riskLevel : "Low") as AnalysisResult["riskLevel"],
+          riskScore: Math.min(100, Math.max(0, Number(d.riskScore) || 0)),
+          reason: typeof d.reason === "string" ? d.reason : "No issue found.",
+          suggestedAction: (["Safe", "Archive", "Delete"].includes(d.suggestedAction) ? d.suggestedAction : "Safe") as AnalysisResult["suggestedAction"],
+        };
+      } catch {
+        continue;
+      }
+    }
+
+    if (attempt < 3) {
+      await new Promise(x => setTimeout(x, 1000 * attempt));
+      return analyzeItem(item, attempt + 1);
+    }
+
+    return {
+      ...item,
+      riskLevel: "Low",
+      riskScore: 0,
+      reason: "AI scan fallback applied.",
+      suggestedAction: "Safe",
+    };
+  }, []);
+
+  const scanItems = useCallback(async (items: PostItem[]) => {
+    setPage("analyzing");
+    setResults([]);
+    setProgress(0);
+    setStatusMsg("");
+    setLiveItems(items);
+    setTotalToScan(items.length);
+
+    const collected: AnalysisResult[] = [];
+    const batchSize = 4;
+
+    for (let start = 0; start < items.length; start += batchSize) {
+      const batch = items.slice(start, start + batchSize);
+      const analyzedBatch = await Promise.all(batch.map(item => analyzeItem(item)));
+
+      for (const analyzedItem of analyzedBatch) {
+        if (analyzedItem.text.length > 0) collected.push(analyzedItem);
+      }
+
+      setResults([...collected]);
+      setProgress(Math.round((collected.length / items.length) * 100));
+    }
+
+    setPage("dashboard");
+  }, [analyzeItem]);
+
   // ── Upload ────────────────────────────────────────────────────────────────
 
-  const handleFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !platform) return;
     if (fileRef.current) fileRef.current.value = "";
@@ -446,70 +543,8 @@ function App() {
     setUploading(false);
     setActiveTab("all"); setRiskFilter("all"); setPage2(1);
 
-    // ── FAST SCAN: no AI, instant results, go straight to dashboard ──────────
-    if (scanMode === "fast") {
-      // Convert all items to AnalysisResult with dummy risk values
-      const fastResults: AnalysisResult[] = extracted.map(item => ({
-        ...item,
-        riskLevel: "Low" as const,
-        riskScore: 0,
-        reason: "Fast scan — no AI analysis. Switch to Deep Scan for risk assessment.",
-        suggestedAction: "Safe" as const,
-      }));
-      setResults(fastResults);
-      setProgress(100);
-      setPage("dashboard");
-      return;
-    }
-
-    // ── DEEP SCAN: AI analysis, show live feed ─────────────────────────────
-    setPage("analyzing");
-    setResults([]); setProgress(0); setStatusMsg("");
-    setLiveItems(extracted); // show all items immediately during scanning
-
-    const collected: AnalysisResult[] = [];
-    for (let i = 0; i < extracted.length; i++) {
-      const item = extracted[i];
-
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const r = await fetch("/api/analyze-post", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ item }),
-          });
-          if (r.status === 429) { await new Promise(x => setTimeout(x, 6000 * attempt)); continue; }
-          if (r.ok) {
-            const d = await r.json();
-            const normalized: AnalysisResult = {
-              category:     d.category     || item.category,
-              text:         d.text         || d.post || item.text || "",
-              sender:       d.sender       || item.sender,
-              receiver:     d.receiver     || item.receiver,
-              participants: d.participants || item.participants,
-              username:     d.username     || item.username,
-              reelOwner:    d.reelOwner    || item.reelOwner,
-              postOwner:    d.postOwner    || item.postOwner,
-              timestamp:    d.timestamp    || item.timestamp,
-              extra:        d.extra        || item.extra,
-              riskLevel:    (["Low","Medium","High"].includes(d.riskLevel) ? d.riskLevel : "Low") as AnalysisResult["riskLevel"],
-              riskScore:    Math.min(100, Math.max(0, Number(d.riskScore) || 0)),
-              reason:       typeof d.reason === "string" ? d.reason : "No issue.",
-              suggestedAction: (["Safe","Archive","Delete"].includes(d.suggestedAction) ? d.suggestedAction : "Safe") as AnalysisResult["suggestedAction"],
-            };
-            if (normalized.text.length > 0) collected.push(normalized);
-            break;
-          }
-        } catch { await new Promise(x => setTimeout(x, 1000 * attempt)); }
-      }
-
-      setResults([...collected]);
-      setProgress(Math.round((i + 1) / extracted.length * 100));
-      if (i < extracted.length - 1) await new Promise(x => setTimeout(x, 500));
-    }
-
-    setPage("dashboard");
-  }, [platform, scanMode]);
+    await scanItems(extracted);
+  }, [platform, scanItems]);
 
   // ── Stats ─────────────────────────────────────────────────────────────────
 
@@ -518,6 +553,18 @@ function App() {
   const safeScore = useMemo(() =>
     results.length > 0 ? Math.round(results.filter(r => r.riskLevel === "Low").length / results.length * 100) : 0,
     [results]);
+  const overallSafetyScore = useMemo(() => {
+    if (results.length === 0) return 100;
+    return Math.round(results.reduce((sum, item) => sum + (100 - item.riskScore), 0) / results.length);
+  }, [results]);
+  const finalVerdict = useMemo(() => verdictFromScore(overallSafetyScore), [overallSafetyScore]);
+  const platformBreakdown = useMemo(() => {
+    const source = Object.keys(counts).length ? counts : results.reduce<Record<string, number>>((acc, item) => {
+      acc[item.category] = (acc[item.category] || 0) + 1;
+      return acc;
+    }, {});
+    return (Object.entries(source) as Array<[string, number]>).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  }, [counts, results]);
 
   const tabs = platform ? PLATFORM_TABS[platform] : [];
 
@@ -581,6 +628,18 @@ function App() {
               <p className="text-blue-400 text-lg md:text-xl font-medium tracking-[0.2em] uppercase mb-10">
                 Scan Your Past. Secure Your Future.
               </p>
+              <div className="max-w-3xl mx-auto mb-10">
+                <p className="text-white/90 text-xl md:text-2xl font-semibold tracking-tight mb-4">
+                  Before they judge you, audit yourself.
+                </p>
+                <p className="text-zinc-400 text-sm md:text-base leading-relaxed max-w-2xl mx-auto">
+                  Governments, recruiters, universities, and legal systems are increasingly reviewing digital behavior.
+                  Your posts, comments, and messages are no longer just memories, they are part of your reputation.
+                </p>
+                <p className="text-blue-300 text-sm md:text-base font-medium mt-4 tracking-wide">
+                  Don&apos;t let your past compromise your future. Review your digital footprint before someone else does.
+                </p>
+              </div>
               <button type="button" onClick={() => setPage("platform")}
                 className="px-10 py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 font-bold transition-all inline-flex items-center gap-3 group text-lg shadow-lg shadow-blue-500/20 mb-20">
                 Start Risk Analysis <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
@@ -643,62 +702,43 @@ function App() {
                 <p className="text-zinc-400 text-sm">All content types will be scanned — no limits.</p>
               </div>
 
-              {/* Scan mode selector */}
-              <div className="mb-6 grid grid-cols-2 gap-3">
-                <button type="button" onClick={() => setScanMode("fast")}
-                  className={`p-4 rounded-2xl border text-left transition-all ${
-                    scanMode === "fast"
-                      ? "border-blue-500 bg-blue-500/10"
-                      : "border-white/10 bg-zinc-900/50 hover:border-white/20"
-                  }`}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                      scanMode === "fast" ? "border-blue-500" : "border-zinc-600"}`}>
-                      {scanMode === "fast" && <div className="w-2 h-2 rounded-full bg-blue-500" />}
-                    </div>
-                    <span className="font-bold text-sm">Fast Scan</span>
-                    <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-bold ml-auto">~30 sec</span>
-                  </div>
-                  <p className="text-xs text-zinc-400 leading-relaxed">
-                    Instantly organizes all your content — posts, DMs, comments, stories — into tabs. No AI analysis. Browse everything right away.
-                  </p>
-                </button>
-
-                <button type="button" onClick={() => setScanMode("deep")}
-                  className={`p-4 rounded-2xl border text-left transition-all ${
-                    scanMode === "deep"
-                      ? "border-purple-500 bg-purple-500/10"
-                      : "border-white/10 bg-zinc-900/50 hover:border-white/20"
-                  }`}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                      scanMode === "deep" ? "border-purple-500" : "border-zinc-600"}`}>
-                      {scanMode === "deep" && <div className="w-2 h-2 rounded-full bg-purple-500" />}
-                    </div>
-                    <span className="font-bold text-sm">Deep Scan</span>
-                    <span className="text-[10px] bg-purple-500/20 text-purple-400 px-2 py-0.5 rounded font-bold ml-auto">2–10 min</span>
-                  </div>
-                  <p className="text-xs text-zinc-400 leading-relaxed">
-                    Gemini AI reads every post, comment, DM and flags risky content. Best before visa or job applications.
-                  </p>
-                </button>
+              <div className="mb-6 p-4 rounded-2xl border border-blue-500/20 bg-blue-500/5">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-3 h-3 rounded-full bg-blue-400 animate-pulse" />
+                  <span className="font-bold text-sm">Deep AI Scan</span>
+                  <span className="text-[10px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded font-bold ml-auto">precision engine</span>
+                </div>
+                <p className="text-xs text-zinc-400 leading-relaxed">
+                  Your data stays safe while we uncover what could harm you.
+                </p>
               </div>
 
               {/* Drop zone */}
               <div className="relative group mb-6">
                 <input ref={fileRef} type="file" accept=".zip" onChange={handleFile}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" disabled={uploading} />
-                <div className={`p-14 rounded-3xl border-2 border-dashed transition-all flex flex-col items-center gap-5
+                <div className={`p-14 rounded-3xl border-2 border-dashed transition-all flex flex-col items-center gap-5 overflow-hidden
                   ${uploading ? "border-blue-500/40 bg-blue-500/5" : "border-white/10 bg-zinc-900/50 group-hover:border-blue-500/50 group-hover:bg-blue-500/5"}`}>
-                  {uploading ? <Loader className="w-14 h-14 text-blue-500 animate-spin" />
-                    : <Upload className="w-14 h-14 text-zinc-600 group-hover:text-blue-500 transition-colors" />}
+                  {uploading ? (
+                    <div className="relative w-20 h-20 flex items-center justify-center">
+                      <div className="absolute inset-0 rounded-full border border-blue-400/20 animate-ping" />
+                      <div className="absolute inset-2 rounded-full border border-cyan-400/20 animate-pulse" />
+                      <Loader className="w-12 h-12 text-blue-400 animate-spin relative z-10" />
+                    </div>
+                  ) : <Upload className="w-14 h-14 text-zinc-600 group-hover:text-blue-500 transition-colors" />}
                   <div className="text-center">
                     <p className="text-lg font-bold mb-1">{uploading ? statusMsg : "Click or drag .zip file here"}</p>
                     <p className="text-zinc-500 text-sm">{uploading ? `${uploadPct}% uploaded` : "Up to 700MB"}</p>
                   </div>
-                  {uploading && uploadPct > 0 && uploadPct < 100 && (
-                    <div className="w-full max-w-xs bg-white/5 rounded-full h-1.5">
-                      <div className="bg-blue-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${uploadPct}%` }} />
+                  {uploading && (
+                    <div className="w-full max-w-sm space-y-2">
+                      <div className="w-full bg-white/5 rounded-full h-2 overflow-hidden">
+                        <div className="bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-500 h-2 rounded-full transition-all duration-300" style={{ width: `${Math.max(uploadPct, 6)}%` }} />
+                      </div>
+                      <div className="flex justify-between text-[11px] uppercase tracking-[0.25em] text-zinc-500">
+                        <span>Upload</span>
+                        <span>{uploadPct < 100 ? "Transfer" : "Parsing"}</span>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -756,11 +796,12 @@ function App() {
                   <span className="text-sm font-black relative z-10">{progress}%</span>
                 </div>
                 <div className="flex-1">
-                  <h2 className="text-lg font-bold mb-1">Deep Scanning {totalToScan} items…</h2>
+                  <h2 className="text-lg font-bold mb-1">AI Scanning {totalToScan} items…</h2>
                   <div className="flex items-center gap-4 text-sm text-zinc-400">
                     <span>{results.length} analyzed</span>
                     <span className="text-red-400">{results.filter(r => r.riskLevel === "High").length} high risk</span>
                     <span className="text-amber-400">{results.filter(r => r.riskLevel === "Medium").length} medium</span>
+                    <span className="text-emerald-400">{results.filter(r => r.riskLevel === "Low").length} safe</span>
                   </div>
                 </div>
                 <div className="text-right shrink-0">
@@ -918,25 +959,26 @@ function App() {
                   <div className="flex items-center gap-3 mb-1">
                     <h2 className="text-3xl font-bold">Risk Intelligence Report</h2>
                     <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
-                      scanMode === "fast"
-                        ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/20"
-                        : "bg-purple-500/20 text-purple-400 border border-purple-500/20"
+                      "bg-blue-500/20 text-blue-300 border border-blue-500/20"
                     }`}>
-                      {scanMode === "fast" ? "Fast Scan" : "Deep Scan"}
+                      AI Scan
                     </span>
                   </div>
                   <p className="text-zinc-400 text-sm capitalize">{results.length} items from your {platform} archive</p>
-                  {scanMode === "fast" && (
-                    <p className="text-xs text-zinc-500 mt-1 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 bg-amber-400 rounded-full inline-block" />
-                      Fast scan shows all content without AI risk analysis. Run Deep Scan for risk assessment.
-                    </p>
-                  )}
+                  <p className="text-xs text-zinc-500 mt-1">AI-based safety analysis across posts, comments, stories and DMs.</p>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
-                  <button type="button" onClick={() => { setPage("upload"); }}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (allItems.length > 0) {
+                        void scanItems(allItems);
+                      } else {
+                        setPage("upload");
+                      }
+                    }}
                     className="px-4 py-2.5 rounded-xl border border-white/10 text-sm font-bold hover:bg-white/5 transition-all flex items-center gap-2">
-                    Run Deep Scan
+                    Re-run AI Scan
                   </button>
                   <button type="button" onClick={reset}
                     className="px-5 py-2.5 rounded-xl bg-white text-black font-bold hover:bg-zinc-200 transition-all flex items-center gap-2 text-sm">
@@ -946,18 +988,55 @@ function App() {
               </div>
 
               {/* Stats */}
-              <div className="grid grid-cols-4 gap-4 mb-8">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                 {[
                   { label: "Scanned", value: results.length },
-                  { label: "High Risk", value: high, color: "text-red-400" },
-                  { label: "Medium",    value: med,  color: "text-amber-400" },
-                  { label: "Safe",      value: `${safeScore}%`, color: "text-emerald-400" },
+                  { label: "Risky", value: high, color: "text-red-400" },
+                  { label: "Moderate", value: med,  color: "text-amber-400" },
+                  { label: "Safe", value: `${safeScore}%`, color: "text-emerald-400" },
                 ].map((s, i) => (
                   <div key={i} className="p-4 rounded-2xl bg-zinc-900/50 border border-white/5 text-center">
                     <div className={`text-2xl font-black mb-1 ${s.color || "text-white"}`}>{s.value}</div>
                     <div className="text-xs text-zinc-500 uppercase tracking-widest font-bold">{s.label}</div>
                   </div>
                 ))}
+              </div>
+
+              <div className="grid lg:grid-cols-[1.2fr,0.8fr] gap-4 mb-8">
+                <div className="p-5 rounded-3xl bg-zinc-900/50 border border-white/5">
+                  <div className="flex items-center justify-between gap-4 mb-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.3em] text-zinc-500 mb-2">Final Safety Score</p>
+                      <div className="flex items-center gap-3">
+                        <span className="text-4xl font-black">{overallSafetyScore}%</span>
+                        <span className={`text-sm font-bold px-3 py-1.5 rounded-full border ${finalVerdict.chip}`}>
+                          {finalVerdict.label}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="w-28 h-28 rounded-full border border-white/10 bg-black/30 grid place-items-center">
+                      <div className="text-center">
+                        <div className={`text-2xl font-black ${finalVerdict.tone}`}>{finalVerdict.label}</div>
+                        <div className="text-[11px] uppercase tracking-[0.3em] text-zinc-500">overall</div>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-sm text-zinc-400">
+                    Final verdict blends posts, comments, stories and DMs so you can quickly see whether the archive looks safe, moderate or risky.
+                  </p>
+                </div>
+
+                <div className="p-5 rounded-3xl bg-zinc-900/50 border border-white/5">
+                  <p className="text-xs uppercase tracking-[0.3em] text-zinc-500 mb-4">Archive Breakdown</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {platformBreakdown.map(([label, value]) => (
+                      <div key={label} className="rounded-2xl border border-white/5 bg-black/20 p-3">
+                        <div className="text-xl font-black text-white">{value}</div>
+                        <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               {/* TABS */}
@@ -1000,8 +1079,9 @@ function App() {
                 <div className="ml-auto flex gap-2">
                   {[
                     { val: "all",    label: "All" },
-                    { val: "High",   label: "High" },
-                    { val: "Medium", label: "Medium" },
+                    { val: "High",   label: "Risky" },
+                    { val: "Medium", label: "Moderate" },
+                    { val: "Low", label: "Safe" },
                   ].map(f => (
                     <button key={f.val} type="button"
                       onClick={() => { setRiskFilter(f.val); setPage2(1); }}
@@ -1038,7 +1118,7 @@ function App() {
                 <>
                   <div className="space-y-3">
                     {paged.map((r, i) => (
-                      <ContentCard key={i} item={r} index={i} isFastScan={scanMode === "fast"} />
+                      <ContentCard key={i} item={r} index={i} />
                     ))}
                   </div>
 
@@ -1071,9 +1151,11 @@ function App() {
             <EyeLogo className="w-7 h-7" />
             <span className="font-bold">3rd EYE</span>
           </div>
-          <div className="text-zinc-500 text-sm text-center md:text-right">
-            <p>Developer: Sanskardeep Talikote</p>
-            <p>Contact: 9403910943 | sanskardeepbtalikote19@gmail.com</p>
+          <div className="text-center md:text-right">
+            <p className="text-white font-black text-base md:text-lg tracking-wide">© 2026 Sanskardeep Talikote</p>
+            <p className="text-blue-300 font-bold text-sm md:text-base mt-1">
+              Developer | +91 9403910943 | sanskardeepbtalikote19@gmail.com
+            </p>
           </div>
         </div>
       </footer>
@@ -1081,34 +1163,5 @@ function App() {
   );
 }
 
-// ─── ERROR BOUNDARY ───────────────────────────────────────────────────────────
-
-class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  constructor(props: { children: ReactNode }) { super(props); this.state = { error: null }; }
-  static getDerivedStateFromError(error: Error) { return { error }; }
-  componentDidCatch(error: Error, info: any) { console.error("3rd EYE crash:", error, info); }
-  render() {
-    if (this.state.error) {
-      return (
-        <div className="min-h-screen bg-black text-white flex items-center justify-center p-8">
-          <div className="max-w-lg text-center">
-            <AlertTriangle className="w-12 h-12 text-red-400 mx-auto mb-4" />
-            <h2 className="text-2xl font-bold mb-3">Something went wrong</h2>
-            <p className="text-zinc-600 text-xs font-mono bg-zinc-900 p-3 rounded-lg text-left mb-6 break-all">
-              {this.state.error.message}
-            </p>
-            <button type="button"
-              onClick={() => { this.setState({ error: null }); window.location.reload(); }}
-              className="px-6 py-3 rounded-xl bg-white text-black font-bold hover:bg-zinc-200 transition-all">
-              Reload App
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-const AppWithBoundary = () => <ErrorBoundary><App /></ErrorBoundary>;
+const AppWithBoundary = () => <App />;
 export default AppWithBoundary;

@@ -43,9 +43,9 @@ function isMedia(name: string) {
 
 function safeJson(raw: string): any {
   try {
-    let s = raw.trim();
+    let s = raw.replace(/^\uFEFF/, "").trim();
     // Strip JS variable assignment: window.YTD.tweets.part0 = [...]
-    if (s.includes("=")) s = s.substring(s.indexOf("=") + 1).trim();
+    if (/^[\w$.]+\s*=/.test(s)) s = s.substring(s.indexOf("=") + 1).trim();
     if (s.endsWith(";")) s = s.slice(0, -1).trim();
     return JSON.parse(s);
   } catch { return null; }
@@ -171,7 +171,11 @@ function parseInstagram(zip: AdmZip): PostItem[] {
 
     // ── COMMENTS ON POSTS ─────────────────────────────────────────────────────
     // post_comments_1.json → {comments_media_comments:[{string_list_data:[{value,timestamp,href}],title}]}
-    if (name.includes("post_comment") || name.includes("comments/post")) {
+    if (
+      name.includes("post_comment") ||
+      name.includes("comments/post") ||
+      name.includes("media_comments")
+    ) {
       const list: any[] = data?.comments_media_comments || (Array.isArray(data) ? data : []);
       for (const c of list) {
         if (Array.isArray(c?.string_list_data)) {
@@ -236,10 +240,15 @@ function parseInstagram(zip: AdmZip): PostItem[] {
     // ── DIRECT MESSAGES ───────────────────────────────────────────────────────
     // messages/inbox/<username_hash>/message_1.json
     // {participants:[{name}], messages:[{sender_name,content,timestamp_ms,type}]}
-    if (name.includes("message_") && name.includes("inbox")) {
+    if (
+      name.includes("message_") &&
+      (name.includes("inbox") || name.includes("message_requests"))
+    ) {
       const participants: string[] = (data?.participants || [])
         .map((p: any) => s(p?.name)).filter(Boolean);
       const msgs: any[] = Array.isArray(data?.messages) ? data.messages : [];
+      const conversationLabel =
+        name.split("/").slice(-2, -1)[0]?.replace(/[_-]/g, " ").trim() || "";
       for (const msg of msgs) {
         const text = s(msg?.content);
         if (text.length < 2) continue;
@@ -252,6 +261,7 @@ function parseInstagram(zip: AdmZip): PostItem[] {
           receiver: receivers.join(", "),
           participants,
           timestamp: fmtTs(msg?.timestamp_ms),
+          extra: conversationLabel ? `Conversation: ${conversationLabel}` : undefined,
         });
       }
     }
@@ -571,7 +581,14 @@ function dedup(items: PostItem[]): PostItem[] {
   const result: PostItem[] = [];
   for (const item of items) {
     if ((item.text || "").trim().length < 2) continue;
-    const key = (item.category + "|" + item.text).toLowerCase().slice(0, 200);
+    const key = [
+      item.category,
+      item.text,
+      item.sender || "",
+      item.receiver || "",
+      item.timestamp || "",
+      item.extra || "",
+    ].join("|").toLowerCase().slice(0, 400);
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(item);
@@ -588,8 +605,66 @@ interface AnalysisResult extends PostItem {
   suggestedAction: "Safe" | "Archive" | "Delete";
 }
 
+function heuristicAnalyze(item: PostItem): AnalysisResult {
+  const text = `${item.text || ""} ${item.extra || ""}`.toLowerCase();
+  const base = { ...item };
+
+  const groups = [
+    {
+      score: 85,
+      riskLevel: "High" as const,
+      suggestedAction: "Delete" as const,
+      reason: "Potentially dangerous or illegal intent detected.",
+      words: ["bomb", "kill", "murder", "terror", "isis", "gun", "shoot", "attack", "passport fraud", "visa fraud", "human trafficking"],
+    },
+    {
+      score: 72,
+      riskLevel: "High" as const,
+      suggestedAction: "Delete" as const,
+      reason: "Hard-drug, explicit or severe abuse language detected.",
+      words: ["cocaine", "heroin", "meth", "nude", "porn", "rape", "abuse", "racial slur", "hate speech"],
+    },
+    {
+      score: 48,
+      riskLevel: "Medium" as const,
+      suggestedAction: "Archive" as const,
+      reason: "Sensitive or aggressive content may need manual review.",
+      words: ["weed", "drunk", "fight", "fake id", "cheat", "scam", "illegal work", "cash job", "angry", "revenge"],
+    },
+    {
+      score: 32,
+      riskLevel: "Medium" as const,
+      suggestedAction: "Archive" as const,
+      reason: "Profanity or risky tone detected.",
+      words: ["damn", "hell", "stupid", "idiot", "hate", "abusive", "toxic"],
+    },
+  ];
+
+  for (const group of groups) {
+    const match = group.words.find(word => text.includes(word));
+    if (match) {
+      return {
+        ...base,
+        riskLevel: group.riskLevel,
+        riskScore: group.score,
+        reason: `${group.reason} Matched: "${match}".`,
+        suggestedAction: group.suggestedAction,
+      };
+    }
+  }
+
+  return {
+    ...base,
+    riskLevel: "Low",
+    riskScore: 8,
+    reason: "No major safety signal detected in local analysis.",
+    suggestedAction: "Safe",
+  };
+}
+
 async function analyzePost(item: PostItem): Promise<AnalysisResult> {
   const base = { ...item };
+  const heuristic = heuristicAnalyze(item);
 
   const safe = (reason: string): AnalysisResult => ({
     ...base, riskLevel: "Low", riskScore: 0, reason, suggestedAction: "Safe",
@@ -598,7 +673,9 @@ async function analyzePost(item: PostItem): Promise<AnalysisResult> {
     ...base, riskLevel: "High", riskScore: 85, reason, suggestedAction: "Delete",
   });
 
-  if (!ai) return safe("AI not configured. Add GEMINI_API_KEY to .env");
+  if (!ai) return heuristic;
+  if (heuristic.riskLevel === "High") return heuristic;
+  if (heuristic.riskLevel === "Low" && item.text.trim().length < 80) return heuristic;
 
   try {
     const response = await ai.models.generateContent({
@@ -611,7 +688,7 @@ ${item.sender ? `Sender: ${item.sender}` : ""}
 Content: "${(item.text || "").slice(0, 1500)}"
 
 Flag ONLY genuinely problematic content: hate speech, extremism, illegal activity, threats, explicit content, visa violation intent.
-Normal everyday content = Low risk (0-15 score).`,
+      Normal everyday content = Low risk (0-15 score). Return Medium only when there is a meaningful concern.`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -631,15 +708,15 @@ Normal everyday content = Low risk (0-15 score).`,
     return {
       ...base,
       riskLevel: (["Low","Medium","High"].includes(r.riskLevel) ? r.riskLevel : "Low") as AnalysisResult["riskLevel"],
-      riskScore: Math.min(100, Math.max(0, Math.round(Number(r.riskScore) || 0))),
-      reason: s(r.reason).slice(0, 400) || "No issue found.",
-      suggestedAction: (["Safe","Archive","Delete"].includes(r.suggestedAction) ? r.suggestedAction : "Safe") as AnalysisResult["suggestedAction"],
+      riskScore: Math.min(100, Math.max(0, Math.round(Number(r.riskScore) || heuristic.riskScore))),
+      reason: s(r.reason).slice(0, 400) || heuristic.reason,
+      suggestedAction: (["Safe","Archive","Delete"].includes(r.suggestedAction) ? r.suggestedAction : heuristic.suggestedAction) as AnalysisResult["suggestedAction"],
     };
   } catch (err: any) {
     const msg = (err?.message || "").toLowerCase();
     if (msg.includes("safety") || msg.includes("block")) return high("Flagged by safety filter — review manually.");
     if (msg.includes("quota") || msg.includes("429")) throw new Error("RATE_LIMIT");
-    return safe("Analysis error.");
+    return heuristic;
   }
 }
 
